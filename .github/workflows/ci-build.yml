@@ -1,0 +1,444 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+    - master
+
+env:
+  CTEST_OUTPUT_ON_FAILURE: 1
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+jobs:
+  emscripten:
+    name: Emscripten
+
+    runs-on: ubuntu-20.04
+    container:
+      # If you change this version, change the number in the cache step too.
+      image: emscripten/emsdk:3.1.42
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup cache
+      uses: actions/cache@v4
+      with:
+        path: /emsdk/upstream/emscripten/cache
+        key: 3.1.42-${{ runner.os }}
+
+    - name: Patch Emscripten to support LZMA
+      run: |
+        cd /emsdk/upstream/emscripten
+        patch -p1 < ${GITHUB_WORKSPACE}/os/emscripten/emsdk-liblzma.patch
+
+    - name: Build (host tools)
+      run: |
+        mkdir build-host
+        cd build-host
+
+        echo "::group::CMake"
+        cmake .. -DOPTION_TOOLS_ONLY=ON
+        echo "::endgroup::"
+
+        echo "::group::Build"
+        echo "Running on $(nproc) cores"
+        cmake --build . -j $(nproc) --target tools
+        echo "::endgroup::"
+
+    - name: Install GCC problem matcher
+      uses: ammaraskar/gcc-problem-matcher@master
+
+    - name: Build
+      run: |
+        mkdir build
+        cd build
+
+        echo "::group::CMake"
+        emcmake cmake .. -DHOST_BINARY_DIR=../build-host
+        echo "::endgroup::"
+
+        echo "::group::Build"
+        echo "Running on $(nproc) cores"
+        cmake --build . -j $(nproc) --target openttd
+        echo "::endgroup::"
+
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - name: Clang - Debug
+          compiler: clang-15
+          cxxcompiler: clang++-15
+          libraries: libsdl2-dev
+        - name: Clang - Release
+          compiler: clang-15
+          cxxcompiler: clang++-15
+          libraries: libsdl2-dev
+          extra-cmake-parameters: -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOPTION_USE_ASSERTS=OFF
+        - name: GCC - SDL2
+          compiler: gcc
+          cxxcompiler: g++
+          libraries: libsdl2-dev
+        - name: GCC - SDL1.2
+          compiler: gcc
+          cxxcompiler: g++
+          libraries: libsdl1.2-dev
+        - name: GCC - Dedicated
+          compiler: gcc
+          cxxcompiler: g++
+          libraries: grfcodec
+          extra-cmake-parameters: -DOPTION_DEDICATED=ON -DCMAKE_CXX_FLAGS_INIT="-DRANDOM_DEBUG" -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
+          # Compile without SDL / SDL2, as that should compile fine too.
+
+    name: Linux (${{ matrix.name }})
+
+    runs-on: ubuntu-latest
+    env:
+      CC: ${{ matrix.compiler }}
+      CXX: ${{ matrix.cxxcompiler }}
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup vcpkg caching
+      uses: actions/github-script@v7
+      with:
+        script: |
+          core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+          core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+          core.exportVariable('VCPKG_BINARY_SOURCES', 'clear;x-gha,readwrite')
+
+    - name: Install vcpkg
+      run: |
+        git clone https://github.com/microsoft/vcpkg
+        ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+
+    - name: Install dependencies
+      run: |
+        echo "::group::Update apt"
+        sudo apt-get update
+        echo "::endgroup::"
+
+        echo "::group::Install dependencies"
+        sudo apt-get install -y --no-install-recommends \
+          liballegro4-dev \
+          libcurl4-openssl-dev \
+          libfontconfig-dev \
+          libharfbuzz-dev \
+          libicu-dev \
+          liblzma-dev \
+          liblzo2-dev \
+          ${{ matrix.libraries }} \
+          zlib1g-dev \
+          # EOF
+
+        echo "::group::Install vcpkg dependencies"
+
+        # Disable vcpkg integration, as we mostly use system libraries.
+        mv vcpkg.json vcpkg-disabled.json
+
+        # We only use breakpad from vcpkg, as its CMake files
+        # are a bit special. So the Ubuntu's variant doesn't work.
+        ./vcpkg/vcpkg install breakpad
+
+        echo "::endgroup::"
+      env:
+        DEBIAN_FRONTEND: noninteractive
+
+    - name: Get OpenGFX
+      run: |
+        mkdir -p ~/.local/share/openttd/baseset
+        cd ~/.local/share/openttd/baseset
+
+        echo "::group::Download OpenGFX"
+        curl -L https://cdn.openttd.org/opengfx-releases/0.6.0/opengfx-0.6.0-all.zip -o opengfx-all.zip
+        echo "::endgroup::"
+
+        echo "::group::Unpack OpenGFX"
+        unzip opengfx-all.zip
+        echo "::endgroup::"
+
+        rm -f opengfx-all.zip
+
+    - name: Install GCC problem matcher
+      uses: ammaraskar/gcc-problem-matcher@master
+
+    - name: Build
+      run: |
+        mkdir build
+        cd build
+
+        echo "::group::CMake"
+        cmake .. -DCMAKE_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/vcpkg/scripts/buildsystems/vcpkg.cmake ${{ matrix.extra-cmake-parameters }}
+        echo "::endgroup::"
+
+        echo "::group::Build"
+        echo "Running on $(nproc) cores"
+        cmake --build . -j $(nproc)
+        echo "::endgroup::"
+
+    - name: Test
+      run: |
+        (
+          cd build
+          ctest -j $(nproc) --timeout 120
+        )
+
+        # Re-enable vcpkg.
+        mv vcpkg-disabled.json vcpkg.json
+
+        # Check no tracked files have been modified.
+        git diff --exit-code
+
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arch: arm64
+          full_arch: arm64
+
+    name: Mac OS (${{ matrix.arch }})
+
+    runs-on: macos-14
+    env:
+      MACOSX_DEPLOYMENT_TARGET: 10.13
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup vcpkg caching
+      uses: actions/github-script@v7
+      with:
+        script: |
+          core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+          core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+          core.exportVariable('VCPKG_BINARY_SOURCES', 'clear;x-gha,readwrite')
+
+    - name: Install vcpkg
+      run: |
+        git clone https://github.com/microsoft/vcpkg
+        ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+
+    - name: Install OpenGFX
+      run: |
+        mkdir -p ~/Documents/OpenTTD/baseset
+        cd ~/Documents/OpenTTD/baseset
+
+        echo "::group::Download OpenGFX"
+        curl -L https://cdn.openttd.org/opengfx-releases/0.6.0/opengfx-0.6.0-all.zip -o opengfx-all.zip
+        echo "::endgroup::"
+
+        echo "::group::Unpack OpenGFX"
+        unzip opengfx-all.zip
+        echo "::endgroup::"
+
+        rm -f opengfx-all.zip
+
+    - name: Install GCC problem matcher
+      uses: ammaraskar/gcc-problem-matcher@master
+
+    - name: Build
+      run: |
+        mkdir build
+        cd build
+
+        echo "::group::CMake"
+        cmake .. \
+          -DCMAKE_OSX_ARCHITECTURES=${{ matrix.full_arch }} \
+          -DVCPKG_TARGET_TRIPLET=${{ matrix.arch }}-osx \
+          -DCMAKE_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/vcpkg/scripts/buildsystems/vcpkg.cmake \
+          # EOF
+        echo "::endgroup::"
+
+        echo "::group::Build"
+        echo "Running on $(sysctl -n hw.logicalcpu) cores"
+        cmake --build . -j $(sysctl -n hw.logicalcpu)
+        echo "::endgroup::"
+
+    - name: Test
+      run: |
+        cd build
+        ctest -j $(sysctl -n hw.logicalcpu) --timeout 120
+
+  windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest]
+        arch: [x86, x64]
+
+    name: Windows (${{ matrix.os }} / ${{ matrix.arch }})
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup vcpkg caching
+      uses: actions/github-script@v7
+      with:
+        script: |
+          core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+          core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+          core.exportVariable('VCPKG_BINARY_SOURCES', 'clear;x-gha,readwrite')
+
+    - name: Install vcpkg
+      run: |
+        git clone https://github.com/microsoft/vcpkg
+        .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+
+    - name: Install OpenGFX
+      shell: bash
+      run: |
+        mkdir -p "C:/Users/Public/Documents/OpenTTD/baseset"
+        cd "C:/Users/Public/Documents/OpenTTD/baseset"
+
+        echo "::group::Download OpenGFX"
+        curl -L https://cdn.openttd.org/opengfx-releases/0.6.0/opengfx-0.6.0-all.zip -o opengfx-all.zip
+        echo "::endgroup::"
+
+        echo "::group::Unpack OpenGFX"
+        unzip opengfx-all.zip
+        echo "::endgroup::"
+
+        rm -f opengfx-all.zip
+
+    - name: Install MSVC problem matcher
+      uses: ammaraskar/msvc-problem-matcher@master
+
+    - name: Configure developer command prompt for ${{ matrix.arch }}
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: ${{ matrix.arch }}
+
+    - name: Build
+      shell: bash
+      env:
+        NINJA_STATUS: "[%f/%t -- %e] " # [finished_edges/total_edges -- elapsed_time], default value is "[%f/%t] "
+      run: |
+        mkdir build
+        cd build
+
+        echo "::group::CMake"
+        cmake .. \
+          -GNinja \
+          -DVCPKG_TARGET_TRIPLET=${{ matrix.arch }}-windows-static \
+          -DCMAKE_TOOLCHAIN_FILE="${GITHUB_WORKSPACE}\vcpkg\scripts\buildsystems\vcpkg.cmake" \
+          # EOF
+        echo "::endgroup::"
+
+        echo "::group::Build"
+        cmake --build .
+        echo "::endgroup::"
+
+    - name: Test
+      shell: bash
+      run: |
+        cd build
+        ctest --timeout 120
+
+
+  msys2:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - msystem: MINGW64
+            arch: x86_64
+          - msystem: MINGW32
+            arch: i686
+
+    name: MinGW (${{ matrix.arch }})
+
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup MSYS2
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: ${{ matrix.msystem }}
+        release: false
+        install: >-
+          git
+          make
+          mingw-w64-${{ matrix.arch }}-cmake
+          mingw-w64-${{ matrix.arch }}-gcc
+          mingw-w64-${{ matrix.arch }}-lzo2
+          mingw-w64-${{ matrix.arch }}-libpng
+          mingw-w64-${{ matrix.arch }}-lld
+          mingw-w64-${{ matrix.arch }}-ninja
+
+    - name: Install OpenGFX
+      shell: bash
+      run: |
+        mkdir -p "C:/Users/Public/Documents/OpenTTD/baseset"
+        cd "C:/Users/Public/Documents/OpenTTD/baseset"
+
+        echo "::group::Download OpenGFX"
+        curl -L https://cdn.openttd.org/opengfx-releases/0.6.0/opengfx-0.6.0-all.zip -o opengfx-all.zip
+        echo "::endgroup::"
+
+        echo "::group::Unpack OpenGFX"
+        unzip opengfx-all.zip
+        echo "::endgroup::"
+
+        rm -f opengfx-all.zip
+
+    - name: Install GCC problem matcher
+      uses: ammaraskar/gcc-problem-matcher@master
+
+    - name: Build
+      shell: msys2 {0}
+      env:
+        NINJA_STATUS: "[%f/%t -- %e] " # [finished_edges/total_edges -- elapsed_time], default value is "[%f/%t] "
+      run: |
+        mkdir build
+        cd build
+
+        echo "::group::CMake"
+        cmake .. \
+          -GNinja \
+          -DCMAKE_CXX_FLAGS="-fuse-ld=lld" \
+          # EOF
+        echo "::endgroup::"
+
+        echo "::group::Build"
+        cmake --build .
+        echo "::endgroup::"
+
+    - name: Test
+      shell: msys2 {0}
+      run: |
+        cd build
+        ctest --timeout 120
+
+  check_annotations:
+    name: Check Annotations
+    needs:
+    - emscripten
+    - linux
+    - macos
+    - windows
+    - msys2
+
+    if: always() && github.event_name == 'pull_request'
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Check annotations
+      uses: OpenTTD/actions/annotation-check@v5
