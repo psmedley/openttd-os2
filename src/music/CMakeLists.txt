@@ -36,6 +36,12 @@ if(NOT OPTION_DEDICATED)
         bemidi.h
         CONDITION HAIKU
     )
+
+    add_files(
+        os2_m.cpp
+        os2_m.h
+        CONDITION OPTION_OS2
+    )
 endif()
 
 add_files(

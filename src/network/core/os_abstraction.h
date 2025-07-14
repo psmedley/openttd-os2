@@ -60,8 +60,8 @@ typedef unsigned long in_addr_t;
 #endif /* _WIN32 */
 
 /* UNIX stuff */
-#if defined(UNIX)
-#	if defined(OPENBSD) || defined(__NetBSD__)
+#if defined(UNIX) || defined(__OS2__)
+#	if defined(OPENBSD) || defined(__NetBSD__) || defined(__OS2__)
 #		define AI_ADDRCONFIG 0
 #	endif
 #	define SOCKET int
@@ -91,6 +91,9 @@ typedef unsigned long in_addr_t;
 #	include <sys/time.h>
 #	include <netdb.h>
 
+#   if defined(__OS2__)
+#               include <libcx/net.h>
+#   endif
 #   if defined(__EMSCRIPTEN__)
 /* Emscripten doesn't support AI_ADDRCONFIG and errors out on it. */
 #		undef AI_ADDRCONFIG
@@ -139,6 +142,8 @@ NetworkError GetSocketError(SOCKET d);
 
 /* Make sure these structures have the size we expect them to be */
 static_assert(sizeof(in_addr)  ==  4); ///< IPv4 addresses should be 4 bytes.
+#ifndef __OS2__
 static_assert(sizeof(in6_addr) == 16); ///< IPv6 addresses should be 16 bytes.
+#endif
 
 #endif /* NETWORK_CORE_OS_ABSTRACTION_H */

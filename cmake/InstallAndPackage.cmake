@@ -178,6 +178,14 @@ elseif(WIN32)
         COMMAND "${CMAKE_SOURCE_DIR}/os/windows/sign.bat" "${BINARY_DESTINATION_DIR}"
       )
     endif()
+elseif(OS2)
+    set(CPACK_GENERATOR "ZIP")
+    if(OPTION_USE_NSIS)
+        list(APPEND CPACK_GENERATOR "NSIS")
+        include(PackageNSIS)
+    endif()
+
+    set(CPACK_PACKAGE_FILE_NAME "openttd-#CPACK_PACKAGE_VERSION#-os2-${CPACK_SYSTEM_NAME}")
 elseif(UNIX)
     # With FHS, we can create deb/rpm/... Without it, they would be horribly broken
     # and not work. The other way around is also true; with FHS they are not

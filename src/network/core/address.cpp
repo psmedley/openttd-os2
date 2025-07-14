@@ -37,6 +37,7 @@ const std::string &NetworkAddress::GetHostname()
  */
 uint16_t NetworkAddress::GetPort() const
 {
+#ifndef __OS2__
 	switch (this->address.ss_family) {
 		case AF_UNSPEC:
 		case AF_INET:
@@ -44,10 +45,12 @@ uint16_t NetworkAddress::GetPort() const
 
 		case AF_INET6:
 			return ntohs(((const struct sockaddr_in6 *)&this->address)->sin6_port);
-
 		default:
 			NOT_REACHED();
 	}
+#else
+	return ntohs(((const struct sockaddr_in *)&this->address)->sin_port);
+#endif
 }
 
 /**
@@ -56,6 +59,7 @@ uint16_t NetworkAddress::GetPort() const
  */
 void NetworkAddress::SetPort(uint16_t port)
 {
+#ifndef __OS2__
 	switch (this->address.ss_family) {
 		case AF_UNSPEC:
 		case AF_INET:
@@ -69,6 +73,9 @@ void NetworkAddress::SetPort(uint16_t port)
 		default:
 			NOT_REACHED();
 	}
+#else
+	((struct sockaddr_in*)&this->address)->sin_port = htons(port);
+#endif
 }
 
 /**
@@ -81,7 +88,9 @@ static const char *GetAddressFormatString(uint16_t family, bool with_family)
 {
 	switch (family) {
 		case AF_INET: return with_family ? "{}:{} (IPv4)" : "{}:{}";
+#ifndef __OS2__
 		case AF_INET6: return with_family ? "[{}]:{} (IPv6)" : "[{}]:{}";
+#endif
 		default: return with_family ? "{}:{} (IPv?)" : "{}:{}";
 	}
 }
@@ -170,6 +179,7 @@ bool NetworkAddress::IsInNetmask(const std::string &netmask)
 
 	uint32_t *ip;
 	uint32_t *mask;
+#ifndef __OS2__
 	switch (this->address.ss_family) {
 		case AF_INET:
 			ip = (uint32_t*)&((struct sockaddr_in*)&this->address)->sin_addr.s_addr;
@@ -184,7 +194,10 @@ bool NetworkAddress::IsInNetmask(const std::string &netmask)
 		default:
 			NOT_REACHED();
 	}
-
+#else
+	ip = (uint32_t*)&((struct sockaddr_in*)&this->address)->sin_addr.s_addr;
+	mask = (uint32_t*)&((struct sockaddr_in*)&mask_address.address)->sin_addr.s_addr;
+#endif
 	while (cidr > 0) {
 		uint32_t msk = cidr >= 32 ? (uint32_t)-1 : htonl(-(1 << (32 - cidr)));
 		if ((*mask++ & msk) != (*ip++ & msk)) return false;
@@ -316,11 +329,12 @@ static SOCKET ListenLoopProc(addrinfo *runp)
 	}
 
 	int on = 1;
+#ifndef __OS2__
 	if (runp->ai_family == AF_INET6 &&
 			setsockopt(sock, IPPROTO_IPV6, IPV6_V6ONLY, (const char*)&on, sizeof(on)) == -1) {
 		Debug(net, 3, "Could not disable IPv4 over IPv6: {}", NetworkError::GetLast().AsString());
 	}
-
+#endif
 	if (bind(sock, runp->ai_addr, (int)runp->ai_addrlen) != 0) {
 		Debug(net, 0, "Could not bind socket on {}: {}", address, NetworkError::GetLast().AsString());
 		closesocket(sock);

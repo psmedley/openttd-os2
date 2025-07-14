@@ -26,7 +26,7 @@
 #include <iostream>
 #include "dedicated_v.h"
 
-#if defined(UNIX)
+#if defined(UNIX) || defined(__OS2__)
 #	include <sys/time.h> /* gettimeofday */
 #	include <sys/types.h>
 #	include <unistd.h>
@@ -144,7 +144,7 @@ void VideoDriver_Dedicated::MakeDirty(int, int, int, int) {}
 bool VideoDriver_Dedicated::ChangeResolution(int, int) { return false; }
 bool VideoDriver_Dedicated::ToggleFullscreen(bool) { return false; }
 
-#if defined(UNIX)
+#if defined(UNIX) || defined(__OS2__)
 static bool InputWaiting()
 {
 	struct timeval tv;
@@ -176,7 +176,7 @@ static void DedicatedHandleKeyInput()
 	if (_exit_game) return;
 
 	std::string input_line;
-#if defined(UNIX)
+#if defined(UNIX) || defined(__OS2__)
 	if (!std::getline(std::cin, input_line)) return;
 #else
 	/* Handle console input, and signal console thread, it can accept input again */
@@ -193,7 +193,7 @@ static void DedicatedHandleKeyInput()
 void VideoDriver_Dedicated::MainLoop()
 {
 	/* Signal handlers */
-#if defined(UNIX)
+#if defined(UNIX) || defined(__OS2__)
 	signal(SIGTERM, DedicatedSignalHandler);
 	signal(SIGINT, DedicatedSignalHandler);
 	signal(SIGQUIT, DedicatedSignalHandler);
